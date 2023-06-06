@@ -1,10 +1,7 @@
-import numpy as np
-
 import torch
 import torch.nn as nn
 from torch.autograd import Function
-from torch.autograd.function import once_differentiable
-from torch.cuda.amp import custom_bwd, custom_fwd 
+from torch.cuda.amp import custom_bwd, custom_fwd
 
 try:
     import _freqencoder as _backend
@@ -14,16 +11,17 @@ except ImportError:
 
 class _freq_encoder(Function):
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32) # force float32 for better precision
+    @custom_fwd(cast_inputs=torch.float32)  # force float32 for better precision
     def forward(ctx, inputs, degree, output_dim):
-        # inputs: [B, input_dim], float 
+        # inputs: [B, input_dim], float
         # RETURN: [B, F], float
 
-        if not inputs.is_cuda: inputs = inputs.cuda()
+        if not inputs.is_cuda:
+            inputs = inputs.cuda()
         inputs = inputs.contiguous()
 
-        B, input_dim = inputs.shape # batch size, coord dim
-        
+        B, input_dim = inputs.shape  # batch size, coord dim
+
         outputs = torch.empty(B, output_dim, dtype=inputs.dtype, device=inputs.device)
 
         _backend.freq_encode_forward(inputs, B, input_dim, degree, output_dim, outputs)
@@ -32,9 +30,9 @@ class _freq_encoder(Function):
         ctx.dims = [B, input_dim, degree, output_dim]
 
         return outputs
-    
+
     @staticmethod
-    #@once_differentiable
+    # @once_differentiable
     @custom_bwd
     def backward(ctx, grad):
         # grad: [B, C * C]
@@ -44,10 +42,12 @@ class _freq_encoder(Function):
         B, input_dim, degree, output_dim = ctx.dims
 
         grad_inputs = torch.zeros_like(inputs)
-        _backend.freq_encode_backward(grad, outputs, B, input_dim, degree, output_dim, grad_inputs)
+        _backend.freq_encode_backward(
+            grad, outputs, B, input_dim, degree, output_dim, grad_inputs
+        )
 
         return grad_inputs, None, None
-    
+
 
 freq_encode = _freq_encoder.apply
 
@@ -59,10 +59,10 @@ class FreqEncoder(nn.Module):
         self.input_dim = input_dim
         self.degree = degree
         self.output_dim = input_dim + input_dim * 2 * degree
-        
+
     def __repr__(self):
         return f"FreqEncoder: input_dim={self.input_dim} degree={self.degree} output_dim={self.output_dim}"
-    
+
     def forward(self, inputs, **kwargs):
         # inputs: [..., input_dim]
         # return: [..., ]

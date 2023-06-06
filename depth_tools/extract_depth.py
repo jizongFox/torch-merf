@@ -1,14 +1,12 @@
-import os
+import argparse
 import glob
+import os
+
+import numpy as np
+import torch
+import torch.nn.functional as F
 import tqdm
 from PIL import Image
-import argparse
-import numpy as np
-import matplotlib.pyplot as plt
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torchvision import transforms
 
 from dpt import DPTDepthModel
@@ -16,25 +14,31 @@ from dpt import DPTDepthModel
 IMAGE_SIZE = 384
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--in_dir', type=str)
-parser.add_argument('--out_dir', type=str)
-parser.add_argument('--ckpt', type=str, default='./depth_tools/omnidata_dpt_depth_v2.ckpt')
+parser.add_argument("--in_dir", type=str)
+parser.add_argument("--out_dir", type=str)
+parser.add_argument(
+    "--ckpt", type=str, default="./depth_tools/omnidata_dpt_depth_v2.ckpt"
+)
 
 opt = parser.parse_args()
 
 os.makedirs(opt.out_dir, exist_ok=True)
 
-map_location = (lambda storage, loc: storage.cuda()) if torch.cuda.is_available() else torch.device('cpu')
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+map_location = (
+    (lambda storage, loc: storage.cuda())
+    if torch.cuda.is_available()
+    else torch.device("cpu")
+)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-model = DPTDepthModel(backbone='vitb_rn50_384') # DPT Hybrid
+model = DPTDepthModel(backbone="vitb_rn50_384")  # DPT Hybrid
 
-print(f'[INFO] loading checkpoint from {opt.ckpt}')
+print(f"[INFO] loading checkpoint from {opt.ckpt}")
 checkpoint = torch.load(opt.ckpt, map_location=map_location)
 
-if 'state_dict' in checkpoint:
+if "state_dict" in checkpoint:
     state_dict = {}
-    for k, v in checkpoint['state_dict'].items():
+    for k, v in checkpoint["state_dict"].items():
         state_dict[k[6:]] = v
 else:
     state_dict = checkpoint
@@ -43,11 +47,13 @@ model.load_state_dict(state_dict)
 model.to(device)
 model.eval()
 
-trans_totensor = transforms.Compose([
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=0.5, std=0.5)
-])
+trans_totensor = transforms.Compose(
+    [
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=0.5, std=0.5),
+    ]
+)
 
 
 @torch.no_grad()
@@ -59,10 +65,15 @@ def run_image(img_path):
 
     depth = model(img_input)
 
-    depth = F.interpolate(depth.unsqueeze(1), size=(H, W), mode='bicubic', align_corners=False)
+    depth = F.interpolate(
+        depth.unsqueeze(1), size=(H, W), mode="bicubic", align_corners=False
+    )
     depth = depth.squeeze().cpu().numpy()
 
-    out_path = os.path.join(opt.out_dir, os.path.splitext(os.path.basename(img_path))[0]) + '.npy'
+    out_path = (
+        os.path.join(opt.out_dir, os.path.splitext(os.path.basename(img_path))[0])
+        + ".npy"
+    )
 
     # plt.matshow(depth)
     # plt.show()
@@ -74,6 +85,6 @@ def run_image(img_path):
     np.save(out_path, depth)
 
 
-img_paths = glob.glob(os.path.join(opt.in_dir, '*'))
+img_paths = glob.glob(os.path.join(opt.in_dir, "*"))
 for img_path in tqdm.tqdm(img_paths):
     run_image(img_path)
