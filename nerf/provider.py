@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import tqdm
 import trimesh
+from loguru import logger
 from scipy.spatial.transform import Slerp, Rotation
 from torch.utils.data import DataLoader
 
@@ -120,7 +121,7 @@ def rand_poses(
 
 
 class NeRFDataset:
-    def __init__(self, opt, device, type="train", n_test=10):
+    def __init__(self, opt, device, type="train", n_test=10, *, predefined_transform_path: str = None):
         super().__init__()
 
         self.opt = opt
@@ -137,6 +138,8 @@ class NeRFDataset:
             opt.bound
         )  # bounding box half length, also used as the radius to random sample poses.
         self.fp16 = opt.fp16  # if preload, load into fp16.
+        self.use_distortion = opt.use_distortion
+        self.predefined_transform_path = predefined_transform_path
 
         if self.scale == -1:
             print(
@@ -288,8 +291,32 @@ class NeRFDataset:
                         p2=float(f["p2"]) if "p2" in f else 0.0,
                     )
                 )
+
         self.distortion_params = torch.stack(self.distort, dim=0).to(self.device)
+        if torch.allclose(self.distortion_params, torch.zeros_like(self.distortion_params)):
+            self.distortion_params = get_distortion_params(
+                k1=float(transform["k1"]) if "k1" in transform else 0.0,
+                k2=float(transform["k2"]) if "k2" in transform else 0.0,
+                k3=float(transform["k3"]) if "k3" in transform else 0.0,
+                k4=float(transform["k4"]) if "k4" in transform else 0.0,
+                p1=float(transform["p1"]) if "p1" in transform else 0.0,
+                p2=float(transform["p2"]) if "p2" in transform else 0.0,
+            )[None, ...].repeat(len(self.poses), 1).to(self.device)
+
+        if self.use_distortion:
+            logger.warning(f"Distortion: {self.distortion_params[0]}")
+
         self.poses = torch.from_numpy(np.stack(self.poses, axis=0))  # [N, 4, 4]
+
+        if self.predefined_transform_path is not None:
+            with open(self.predefined_transform_path, "r") as f:
+                extra_transform = json.load(f)
+                extra_T = np.array([*extra_transform["transform"], [0, 0, 0, 1]], dtype=float)
+                extra_scale = np.array(extra_transform["scale"], dtype=float)
+                logger.warning(f"extra_transform: \n{extra_T} \n extra_scale: \n{extra_scale}")
+            self.poses = torch.from_numpy(extra_T).float() @ self.poses.float()
+            self.poses[:, :3, 3] *= extra_scale
+
         if self.images is not None:
             self.images = torch.from_numpy(
                 np.stack(self.images, axis=0).astype(np.uint8)
@@ -304,13 +331,13 @@ class NeRFDataset:
             visualize_poses(self.poses.numpy(), bound=self.opt.bound)
 
         # load intrinsics
-        if "fl_x" in transform["frames"][0] or "fl_y" in transform["frames"][0]:
+        if "fl_x" in transform or "fl_y" in transform:
             fl_x = (
-                       transform["frames"][0]["fl_x"] if "fl_x" in transform["frames"][0] else transform["frames"][0][
+                       transform["fl_x"] if "fl_x" in transform else transform[
                            "fl_y"]
                    ) / self.downscale
             fl_y = (
-                       transform["frames"][0]["fl_y"] if "fl_y" in transform["frames"][0] else transform["frames"][0][
+                       transform["fl_y"] if "fl_y" in transform else transform[
                            "fl_x"]
                    ) / self.downscale
         elif "camera_angle_x" in transform["frames"][0] or "camera_angle_y" in transform["frames"][0]:
@@ -400,7 +427,7 @@ class NeRFDataset:
 
         rays = get_rays(
             poses, self.intrinsics, self.H, self.W, num_rays,
-            distortion=self.distortion_params[index].to(self.device)
+            distortion=self.distortion_params[index].to(self.device) if self.use_distortion else None
         )
 
         results["rays_o"] = rays["rays_o"]

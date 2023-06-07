@@ -1,12 +1,20 @@
 import json
 import math
 import os
-import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+from loguru import logger
 from tqdm import tqdm
+
+logger.add("/home/jizong/Workspace/torch-merf/data/flower_alignment/merf_logger.log")
+
+
+def print_frame_transform(frames, filename):
+    for f in frames:
+        if filename in str(f["file_path"]):
+            logger.opt(depth=1).info(f"file_name: {filename} c2w: \n {f['transform_matrix']}")
 
 
 def variance_of_laplacian(image):
@@ -64,21 +72,22 @@ def closest_point_2_lines(
     t = ob - oa
     ta = np.linalg.det([t, db, c]) / (denom + 1e-10)
     tb = np.linalg.det([t, da, c]) / (denom + 1e-10)
-    if ta > 0:
+    if ta < 0:
         ta = 0
-    if tb > 0:
+    if tb < 0:
         tb = 0
+    # logger.debug(f"ta: {ta}, tb: {tb}")
     return (oa + ta * da + ob + tb * db) * 0.5, denom
 
 
 if __name__ == "__main__":
-    base_root = "data/showroom_undistortion-self"
+    base_root = "/home/jizong/Workspace/torch-merf/data/flower_alignment"
     # base_root = '/mnt/diskb/liushiyong/Polycam/output12/colmap'
     # base_root = '/mnt/diskb/liushiyong/videos/IMG_0995'
     # base_root = '/mnt/diskb/liushiyong/videos/IMG_1032'
     # base_root = '/mnt/diskb/liushiyong/hw_cloud/1037_1039/colmap_undistort/'
     # TEXT_FOLDER = os.path.join(base_root, 'colmap/sparse/0')
-    TEXT_FOLDER = os.path.join(base_root, "sparse/0")
+    TEXT_FOLDER = os.path.join(base_root, "colmap/sparse/0")
     AABB_SCALE = 16
     SKIP_EARLY = 0
     keep_colmap_coords = False
@@ -86,8 +95,11 @@ if __name__ == "__main__":
     MASK_FOLDER = os.path.join(base_root, "masks/")
     EDGE_FOLDER = os.path.join(base_root, "edge/")
     DEPTH_FOLDER = os.path.join(base_root, "depth/")
-    OUT_PATH = os.path.join(TEXT_FOLDER, "transforms.json")
+    OUT_PATH = os.path.join(base_root, "transforms_merf.json")
     RENDER_OUPUT_PATH = os.path.join(TEXT_FOLDER, "render.json")
+
+    disable_transform = True
+
     cameras = {}
     with open(os.path.join(TEXT_FOLDER, "cameras.txt"), "r") as f:
         angle_x = math.pi / 2
@@ -167,6 +179,8 @@ if __name__ == "__main__":
                 distortion = [k1, k2, k3, k4]
             else:
                 print("Unknown camera model ", els[1])
+                raise RuntimeError(els[1])
+
             # fl = 0.5 * w / tan(0.5 * angle_x);
             angle_x = math.atan(w / (fl_x * 2)) * 2
             angle_y = math.atan(h / (fl_y * 2)) * 2
@@ -240,8 +254,12 @@ if __name__ == "__main__":
                 camera_id = elems[8]
 
                 R = qvec2rotmat(-qvec)
+                # note this is the same as non-negative.
+
+                logger.debug(f"name: {name} qvec: {qvec} tvec: {tvec}")
                 t = tvec.reshape([3, 1])
                 m = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
+                logger.debug(f"name: {name} w2c:\n{m}")
                 c2w = np.linalg.inv(m)
                 if not keep_colmap_coords:
                     c2w[0:3, 2] *= -1  # flip the y and z axis
@@ -250,6 +268,7 @@ if __name__ == "__main__":
                     c2w[2, :] *= -1  # flip whole world upside down
 
                     up += c2w[0:3, 1]
+                    logger.debug(f"name: {name} c2w(opengl):\n{c2w}")
 
                 frame = {
                     "file_path": str(f"{IMAGE_FOLDER}{'_'.join(elems[9:])}"),
@@ -286,10 +305,15 @@ if __name__ == "__main__":
         R = np.pad(R, [0, 1])
         R[-1, -1] = 1
 
+        if disable_transform:
+            R = np.diag([1, 1, 1, 1])
+
         for f in out["frames"]:
             f["transform_matrix"] = np.matmul(
                 R, f["transform_matrix"]
             )  # rotate up to be the z axis
+
+        print_frame_transform(out["frames"], "275.png")
 
         # find a central point they are all looking at
         print("computing center of attention...")
@@ -299,23 +323,27 @@ if __name__ == "__main__":
             mf = f["transform_matrix"][0:3, :]
             for g in out["frames"]:
                 mg = g["transform_matrix"][0:3, :]
-                p, w = closest_point_2_lines(mf[:, 3], mf[:, 2], mg[:, 3], mg[:, 2])
+                p, w = closest_point_2_lines(mf[:, 3], -mf[:, 2], mg[:, 3], -mg[:, 2])
                 if w > 0.00001:
                     totp += p * w
                     totw += w
         if totw > 0.0:
             totp /= totw
         print(totp)  # the cameras are looking at totp
+        if disable_transform:
+            totp = np.zeros_like(totp)
         for f in out["frames"]:
             f["transform_matrix"][0:3, 3] -= totp
-
+        print_frame_transform(out["frames"], "275.png")
         avglen = 0.0
         for f in out["frames"]:
             avglen += np.linalg.norm(f["transform_matrix"][0:3, 3])
         avglen /= nframes
+        avglen = 4.0
         print("avg camera distance from origin", avglen)
         for f in out["frames"]:
             f["transform_matrix"][0:3, 3] *= 4.0 / avglen  # scale to "nerf sized"
+        print_frame_transform(out["frames"], "275.png")
 
         with open(Path(base_root) / "dataparser_transforms.json", "w") as f:
             data = {"transform": R.tolist(), "scale": 4.0 / avglen}
@@ -334,7 +362,7 @@ if __name__ == "__main__":
     print(nframes, "frames")
     print(f"writing {OUT_PATH}")
 
-    out["frames"].sort(key=lambda x: x["file_path"])
+    # out["frames"].sort(key=lambda x: x["file_path"])
     # for index, f in enumerate(out["frames"]):
     #     camera_path = np.array(f['transform_matrix']).reshape(-1).tolist()
     #     out_render['camera_path'].append({"camera_to_world": camera_path, "fov": 50, "aspect": 1.7152542372881356})
@@ -345,4 +373,4 @@ if __name__ == "__main__":
 
     # with open(RENDER_OUPUT_PATH, "w") as outfile:
     #     json.dump(out_render, outfile, indent=2)
-    sys.exit(0)
+    exit(0)

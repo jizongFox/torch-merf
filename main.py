@@ -41,7 +41,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval_cnt",
         type=int,
-        default=1,
+        default=10,
         help="perform validation for $ times during training",
     )
     parser.add_argument("--test", action="store_true", help="test mode")
@@ -247,6 +247,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_spp", type=int, default=1, help="GUI rendering max sample per pixel"
     )
+    parser.add_argument("--use-distortion", action="store_true", help="use distortion")
+    parser.add_argument("--predefined-transform-path", type=str, help="predefined transform path", default=None)
 
     opt = parser.parse_args()
 
@@ -307,7 +309,7 @@ if __name__ == "__main__":
         else:
             if not opt.test_no_video:
                 test_loader = NeRFDataset(
-                    opt, device=device, type=opt.test_split
+                    opt, device=device, type=opt.test_split, predefined_transform_path=opt.predefined_transform_path
                 ).dataloader()
 
                 if test_loader.has_gt:
@@ -321,7 +323,7 @@ if __name__ == "__main__":
                 trainer.test(test_loader, write_video=True)  # test and save video
 
             if not opt.test_no_baking:
-                all_loader = NeRFDataset(opt, device=device, type=opt.train_split)
+                all_loader = NeRFDataset(opt, device=device, type=opt.train_split, predefined_transform_path=opt.predefined_transform_path)
                 if opt.fast_baking:
                     opt.num_rays = 4096 * 8  # load more random pixels from train split
                 else:
@@ -332,7 +334,7 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.get_params(opt.lr), eps=1e-15)
 
         train_loader = NeRFDataset(
-            opt, device=device, type=opt.train_split
+            opt, device=device, type=opt.train_split, predefined_transform_path=opt.predefined_transform_path,
         ).dataloader()
 
         max_epoch = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
@@ -374,7 +376,8 @@ if __name__ == "__main__":
             gui.render()
 
         else:
-            valid_loader = NeRFDataset(opt, device=device, type="val").dataloader()
+            valid_loader = NeRFDataset(opt, device=device, type="val",
+                                       predefined_transform_path=opt.predefined_transform_path).dataloader()
 
             trainer.metrics = [
                 PSNRMeter(),
@@ -387,7 +390,7 @@ if __name__ == "__main__":
 
             # also test
             test_loader = NeRFDataset(
-                opt, device=device, type=opt.test_split
+                opt, device=device, type=opt.test_split, predefined_transform_path=opt.predefined_transform_path
             ).dataloader()
 
             if test_loader.has_gt:
@@ -395,7 +398,8 @@ if __name__ == "__main__":
 
             trainer.test(test_loader, write_video=True)  # test and save video
 
-            all_loader = NeRFDataset(opt, device=device, type=opt.train_split)
+            all_loader = NeRFDataset(opt, device=device, type=opt.train_split,
+                                     predefined_transform_path=opt.predefined_transform_path)
             if opt.fast_baking:
                 opt.num_rays = 4096 * 8  # load more random pixels from train split
             else:
