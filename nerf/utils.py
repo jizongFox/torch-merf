@@ -21,6 +21,8 @@ from rich.console import Console
 from torch_ema import ExponentialMovingAverage
 from torchmetrics.functional import structural_similarity_index_measure
 
+from nerfstudio.cameras import camera_utils
+
 
 def custom_meshgrid(*args):
     # ref: https://pytorch.org/docs/stable/generated/torch.meshgrid.html?highlight=meshgrid#torch.meshgrid
@@ -146,7 +148,7 @@ def create_dodecahedron_cameras(radius=1, center=np.array([0, 0, 0])):
 
 
 @torch.cuda.amp.autocast(enabled=False)
-def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, coords=None):
+def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, coords=None, distortion=None):
     """get rays
     Args:
         poses: [N/1, 4, 4], cam2world
@@ -203,6 +205,7 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, coords=None):
         else:  # random sampling
             inds = torch.randint(0, H * W, size=[N], device=device)  # may duplicate
 
+
         i = torch.gather(i, -1, inds)
         j = torch.gather(j, -1, inds)
 
@@ -215,7 +218,14 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, coords=None):
     zs = -torch.ones_like(i)  # z is flipped
     xs = (i - cx) / fx
     ys = -(j - cy) / fy  # y is flipped
-    directions = torch.stack((xs, ys, zs), dim=-1)  # [N, 3]
+    directions = torch.stack((xs, ys), dim=-1)  # [N, 3]
+    if distortion is not None:
+        directions = camera_utils.radial_and_tangential_undistort(
+            directions.reshape(1, -1, 2),
+            distortion
+        ).reshape(-1, 2)
+    directions = torch.cat([directions, zs[..., None]], dim=-1)
+
     # do not normalize to get actual depth, ref: https://github.com/dunbar12138/DSNeRF/issues/29
     # directions = directions / torch.norm(directions, dim=-1, keepdim=True)
     rays_d = (directions.unsqueeze(1) @ poses[:, :3, :3].transpose(-1, -2)).squeeze(

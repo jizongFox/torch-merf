@@ -10,6 +10,7 @@ import trimesh
 from scipy.spatial.transform import Slerp, Rotation
 from torch.utils.data import DataLoader
 
+from .camera_distortion import get_distortion_params
 from .utils import get_rays, create_dodecahedron_cameras
 
 
@@ -232,14 +233,18 @@ class NeRFDataset:
         else:
             # for colmap, manually split a valid set (the first frame).
             if self.mode == "colmap":
+                val_frames = frames[::16]
+                train_frames = [f for f in frames if f not in val_frames]
+
                 if type == "train":
-                    frames = frames[1:]
+                    frames = train_frames
                 elif type == "val":
-                    frames = frames[:1]
+                    frames = val_frames
                 # else 'all' or 'trainval' : use all frames
 
             self.poses = []
             self.images = []
+            self.distort = []
             for f in tqdm.tqdm(frames, desc=f"Loading {type} data"):
                 f_path = os.path.join(self.root_path, f["file_path"])
                 if self.mode == "blender" and "." not in os.path.basename(f_path):
@@ -273,7 +278,17 @@ class NeRFDataset:
 
                 self.poses.append(pose)
                 self.images.append(image)
-
+                self.distort.append(
+                    get_distortion_params(
+                        k1=float(f["k1"]) if "k1" in f else 0.0,
+                        k2=float(f["k2"]) if "k2" in f else 0.0,
+                        k3=float(f["k3"]) if "k3" in f else 0.0,
+                        k4=float(f["k4"]) if "k4" in f else 0.0,
+                        p1=float(f["p1"]) if "p1" in f else 0.0,
+                        p2=float(f["p2"]) if "p2" in f else 0.0,
+                    )
+                )
+        self.distortion_params = torch.stack(self.distort, dim=0).to(self.device)
         self.poses = torch.from_numpy(np.stack(self.poses, axis=0))  # [N, 4, 4]
         if self.images is not None:
             self.images = torch.from_numpy(
@@ -289,14 +304,16 @@ class NeRFDataset:
             visualize_poses(self.poses.numpy(), bound=self.opt.bound)
 
         # load intrinsics
-        if "fl_x" in transform or "fl_y" in transform:
+        if "fl_x" in transform["frames"][0] or "fl_y" in transform["frames"][0]:
             fl_x = (
-                transform["fl_x"] if "fl_x" in transform else transform["fl_y"]
-            ) / self.downscale
+                       transform["frames"][0]["fl_x"] if "fl_x" in transform["frames"][0] else transform["frames"][0][
+                           "fl_y"]
+                   ) / self.downscale
             fl_y = (
-                transform["fl_y"] if "fl_y" in transform else transform["fl_x"]
-            ) / self.downscale
-        elif "camera_angle_x" in transform or "camera_angle_y" in transform:
+                       transform["frames"][0]["fl_y"] if "fl_y" in transform["frames"][0] else transform["frames"][0][
+                           "fl_x"]
+                   ) / self.downscale
+        elif "camera_angle_x" in transform["frames"][0] or "camera_angle_y" in transform["frames"][0]:
             # blender, assert in radians. already downscaled since we use H/W
             fl_x = (
                 self.W / (2 * np.tan(transform["camera_angle_x"] / 2))
@@ -381,7 +398,10 @@ class NeRFDataset:
 
         poses = self.poses[index].to(self.device)  # [N, 4, 4]
 
-        rays = get_rays(poses, self.intrinsics, self.H, self.W, num_rays)
+        rays = get_rays(
+            poses, self.intrinsics, self.H, self.W, num_rays,
+            distortion=self.distortion_params[index].to(self.device)
+        )
 
         results["rays_o"] = rays["rays_o"]
         results["rays_d"] = rays["rays_d"]
@@ -423,3 +443,6 @@ class NeRFDataset:
         )
         loader.has_gt = self.images is not None
         return loader
+
+    def initialize_camera_optimizer(self):
+        pass
